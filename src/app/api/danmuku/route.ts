@@ -22,9 +22,14 @@ interface DanmuItem {
 }
 
 // 从caiji.cyou API搜索视频链接
-async function searchFromCaijiAPI(title: string, episode?: string | null): Promise<PlatformUrl[]> {
+async function searchFromCaijiAPI(
+  title: string,
+  episode?: string | null
+): Promise<PlatformUrl[]> {
   try {
-    console.log(`🔎 在caiji.cyou搜索: "${title}", 集数: ${episode || '未指定'}`);
+    console.log(
+      `🔎 在caiji.cyou搜索: "${title}", 集数: ${episode || '未指定'}`
+    );
 
     // 尝试多种标题格式进行搜索
     const searchTitles = [
@@ -36,14 +41,19 @@ async function searchFromCaijiAPI(title: string, episode?: string | null): Promi
 
     // 去重
     const uniqueTitles = Array.from(new Set(searchTitles));
-    console.log(`🔍 尝试搜索标题变体: ${uniqueTitles.map(t => `"${t}"`).join(', ')}`);
+    console.log(
+      `🔍 尝试搜索标题变体: ${uniqueTitles.map((t) => `"${t}"`).join(', ')}`
+    );
 
     for (const searchTitle of uniqueTitles) {
       console.log(`🔎 搜索标题: "${searchTitle}"`);
-      const searchUrl = `https://www.caiji.cyou/api.php/provide/vod/?wd=${encodeURIComponent(searchTitle)}`;
+      const searchUrl = `https://www.caiji.cyou/api.php/provide/vod/?wd=${encodeURIComponent(
+        searchTitle
+      )}`;
       const response = await fetch(searchUrl, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
       });
 
@@ -65,7 +75,9 @@ async function searchFromCaijiAPI(title: string, episode?: string | null): Promi
       let exactMatch: any = null;
 
       for (const result of data.list) {
-        console.log(`📋 候选: "${result.vod_name}" (类型: ${result.type_name})`);
+        console.log(
+          `📋 候选: "${result.vod_name}" (类型: ${result.type_name})`
+        );
 
         // 标题完全匹配（优先级最高）
         if (result.vod_name === searchTitle || result.vod_name === title) {
@@ -75,7 +87,8 @@ async function searchFromCaijiAPI(title: string, episode?: string | null): Promi
         }
 
         // 跳过明显不合适的内容
-        const isUnwanted = result.vod_name.includes('解说') ||
+        const isUnwanted =
+          result.vod_name.includes('解说') ||
           result.vod_name.includes('预告') ||
           result.vod_name.includes('花絮') ||
           result.vod_name.includes('动态漫') ||
@@ -97,7 +110,9 @@ async function searchFromCaijiAPI(title: string, episode?: string | null): Promi
       const selectedResult = exactMatch || bestMatch;
 
       if (selectedResult) {
-        console.log(`✅ 使用搜索结果"${searchTitle}": "${selectedResult.vod_name}"`);
+        console.log(
+          `✅ 使用搜索结果"${searchTitle}": "${selectedResult.vod_name}"`
+        );
         // 找到结果就处理并返回，不再尝试其他标题变体
         return await processSelectedResult(selectedResult, episode);
       }
@@ -105,7 +120,6 @@ async function searchFromCaijiAPI(title: string, episode?: string | null): Promi
 
     console.log('📭 所有标题变体都未找到匹配内容');
     return [];
-
   } catch (error) {
     console.error('❌ Caiji API搜索失败:', error);
     return [];
@@ -113,7 +127,10 @@ async function searchFromCaijiAPI(title: string, episode?: string | null): Promi
 }
 
 // 处理选中的结果
-async function processSelectedResult(selectedResult: any, episode?: string | null): Promise<PlatformUrl[]> {
+async function processSelectedResult(
+  selectedResult: any,
+  episode?: string | null
+): Promise<PlatformUrl[]> {
   try {
     console.log(`🔄 处理选中的结果: "${selectedResult.vod_name}"`);
     const firstResult: any = selectedResult;
@@ -121,7 +138,8 @@ async function processSelectedResult(selectedResult: any, episode?: string | nul
 
     const detailResponse = await fetch(detailUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },
     });
 
@@ -146,10 +164,12 @@ async function processSelectedResult(selectedResult: any, episode?: string | nul
         const episodeNum = parseInt(episode);
         // 支持多种集数格式: "20$", "第20集$", "E20$", "EP20$" 等
         const targetEpisode = playUrls.find((url: string) => {
-          return url.startsWith(`${episodeNum}$`) ||
+          return (
+            url.startsWith(`${episodeNum}$`) ||
             url.startsWith(`第${episodeNum}集$`) ||
             url.startsWith(`E${episodeNum}$`) ||
-            url.startsWith(`EP${episodeNum}$`);
+            url.startsWith(`EP${episodeNum}$`)
+          );
         });
         if (targetEpisode) {
           targetUrl = targetEpisode.split('$')[1];
@@ -170,13 +190,22 @@ async function processSelectedResult(selectedResult: any, episode?: string | nul
         let platform = 'unknown';
         if (targetUrl.includes('bilibili.com')) {
           platform = 'bilibili_caiji';
-        } else if (targetUrl.includes('v.qq.com') || targetUrl.includes('qq.com')) {
+        } else if (
+          targetUrl.includes('v.qq.com') ||
+          targetUrl.includes('qq.com')
+        ) {
           platform = 'tencent_caiji';
         } else if (targetUrl.includes('iqiyi.com')) {
           platform = 'iqiyi_caiji';
-        } else if (targetUrl.includes('youku.com') || targetUrl.includes('v.youku.com')) {
+        } else if (
+          targetUrl.includes('youku.com') ||
+          targetUrl.includes('v.youku.com')
+        ) {
           platform = 'youku_caiji';
-        } else if (targetUrl.includes('mgtv.com') || targetUrl.includes('w.mgtv.com')) {
+        } else if (
+          targetUrl.includes('mgtv.com') ||
+          targetUrl.includes('w.mgtv.com')
+        ) {
           platform = 'mgtv_caiji';
         }
 
@@ -197,7 +226,6 @@ async function processSelectedResult(selectedResult: any, episode?: string | nul
 
     console.log(`✅ Caiji API返回 ${urls.length} 个播放链接`);
     return urls;
-
   } catch (error) {
     console.error('❌ Caiji API搜索失败:', error);
     return [];
@@ -205,15 +233,22 @@ async function processSelectedResult(selectedResult: any, episode?: string | nul
 }
 
 // 从豆瓣页面提取平台视频链接
-async function extractPlatformUrls(doubanId: string, episode?: string | null): Promise<PlatformUrl[]> {
+async function extractPlatformUrls(
+  doubanId: string,
+  episode?: string | null
+): Promise<PlatformUrl[]> {
   if (!doubanId) return [];
 
   try {
-    const response = await fetch(`https://movie.douban.com/subject/${doubanId}/`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-    });
+    const response = await fetch(
+      `https://movie.douban.com/subject/${doubanId}/`,
+      {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      }
+    );
 
     if (!response.ok) {
       console.log(`❌ 豆瓣页面请求失败: ${response.status}`);
@@ -227,7 +262,9 @@ async function extractPlatformUrls(doubanId: string, episode?: string | null): P
     // 提取豆瓣跳转链接中的各种视频平台URL
 
     // 腾讯视频
-    const doubanLinkMatches = html.match(/play_link:\s*"[^"]*v\.qq\.com[^"]*"/g);
+    const doubanLinkMatches = html.match(
+      /play_link:\s*"[^"]*v\.qq\.com[^"]*"/g
+    );
     if (doubanLinkMatches && doubanLinkMatches.length > 0) {
       console.log(`🎬 找到 ${doubanLinkMatches.length} 个腾讯视频链接`);
 
@@ -264,7 +301,9 @@ async function extractPlatformUrls(doubanId: string, episode?: string | null): P
         }
       }
 
-      const urlMatch = selectedMatch.match(/https?%3A%2F%2F[^"&]*iqiyi\.com[^"&]*/);
+      const urlMatch = selectedMatch.match(
+        /https?%3A%2F%2F[^"&]*iqiyi\.com[^"&]*/
+      );
       if (urlMatch) {
         const decodedUrl = decodeURIComponent(urlMatch[0]).split('?')[0];
         console.log(`🔗 爱奇艺链接: ${decodedUrl}`);
@@ -287,7 +326,9 @@ async function extractPlatformUrls(doubanId: string, episode?: string | null): P
         }
       }
 
-      const urlMatch = selectedMatch.match(/https?%3A%2F%2F[^"&]*youku\.com[^"&]*/);
+      const urlMatch = selectedMatch.match(
+        /https?%3A%2F%2F[^"&]*youku\.com[^"&]*/
+      );
       if (urlMatch) {
         const decodedUrl = decodeURIComponent(urlMatch[0]).split('?')[0];
         console.log(`🔗 优酷链接: ${decodedUrl}`);
@@ -306,7 +347,9 @@ async function extractPlatformUrls(doubanId: string, episode?: string | null): P
     }
 
     // B站链接提取（直接链接）
-    const biliMatches = html.match(/https:\/\/www\.bilibili\.com\/video\/[^"'\s]+/g);
+    const biliMatches = html.match(
+      /https:\/\/www\.bilibili\.com\/video\/[^"'\s]+/g
+    );
     if (biliMatches && biliMatches.length > 0) {
       console.log(`📺 找到B站直接链接: ${biliMatches[0]}`);
       urls.push({
@@ -316,7 +359,9 @@ async function extractPlatformUrls(doubanId: string, episode?: string | null): P
     }
 
     // B站链接提取（豆瓣跳转链接）
-    const biliDoubanMatches = html.match(/play_link:\s*"[^"]*bilibili\.com[^"]*"/g);
+    const biliDoubanMatches = html.match(
+      /play_link:\s*"[^"]*bilibili\.com[^"]*"/g
+    );
     if (biliDoubanMatches && biliDoubanMatches.length > 0) {
       console.log(`📱 找到 ${biliDoubanMatches.length} 个B站豆瓣链接`);
 
@@ -330,7 +375,9 @@ async function extractPlatformUrls(doubanId: string, episode?: string | null): P
         }
       }
 
-      const urlMatch = selectedMatch.match(/https?%3A%2F%2F[^"&]*bilibili\.com[^"&]*/);
+      const urlMatch = selectedMatch.match(
+        /https?%3A%2F%2F[^"&]*bilibili\.com[^"&]*/
+      );
       if (urlMatch) {
         const decodedUrl = decodeURIComponent(urlMatch[0]).split('?')[0];
         console.log(`🔗 B站豆瓣链接: ${decodedUrl}`);
@@ -339,7 +386,7 @@ async function extractPlatformUrls(doubanId: string, episode?: string | null): P
     }
 
     // 转换移动版链接为PC版链接（弹幕库API需要PC版）
-    const convertedUrls = urls.map(urlObj => {
+    const convertedUrls = urls.map((urlObj) => {
       let convertedUrl = urlObj.url;
 
       // 优酷移动版转PC版
@@ -365,7 +412,10 @@ async function extractPlatformUrls(doubanId: string, episode?: string | null): P
 
       // B站移动版转PC版
       if (convertedUrl.includes('m.bilibili.com/')) {
-        convertedUrl = convertedUrl.replace('m.bilibili.com', 'www.bilibili.com');
+        convertedUrl = convertedUrl.replace(
+          'm.bilibili.com',
+          'www.bilibili.com'
+        );
         // 移除豆瓣来源参数
         convertedUrl = convertedUrl.split('?')[0];
         console.log(`🔄 B站移动版转PC版: ${convertedUrl}`);
@@ -384,10 +434,7 @@ async function extractPlatformUrls(doubanId: string, episode?: string | null): P
 
 // 从XML API获取弹幕数据（支持多个备用URL）
 async function fetchDanmuFromXMLAPI(videoUrl: string): Promise<DanmuItem[]> {
-  const xmlApiUrls = [
-    'https://fc.lyz05.cn',
-    'https://danmu.smone.us'
-  ];
+  const xmlApiUrls = ['https://fc.lyz05.cn', 'https://danmu.smone.us'];
 
   // 尝试每个API URL
   for (let i = 0; i < xmlApiUrls.length; i++) {
@@ -404,14 +451,19 @@ async function fetchDanmuFromXMLAPI(videoUrl: string): Promise<DanmuItem[]> {
       const response = await fetch(apiUrl, {
         signal: controller.signal,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'Accept': 'application/xml, text/xml, */*',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          Accept: 'application/xml, text/xml, */*',
           'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         },
       });
 
       clearTimeout(timeoutId);
-      console.log(`📡 ${apiName}响应状态:`, response.status, response.statusText);
+      console.log(
+        `📡 ${apiName}响应状态:`,
+        response.status,
+        response.statusText
+      );
 
       if (!response.ok) {
         console.log(`❌ ${apiName}响应失败:`, response.status);
@@ -427,7 +479,10 @@ async function fetchDanmuFromXMLAPI(videoUrl: string): Promise<DanmuItem[]> {
       let match;
       let count = 0;
 
-      while ((match = danmakuRegex.exec(responseText)) !== null && count < 10000) {
+      while (
+        (match = danmakuRegex.exec(responseText)) !== null &&
+        count < 10000
+      ) {
         try {
           const pAttr = match[1];
           const text = match[2];
@@ -443,7 +498,8 @@ async function fetchDanmuFromXMLAPI(videoUrl: string): Promise<DanmuItem[]> {
           const colorInt = parseInt(params[3]) || 16777215; // 默认白色
 
           // 将整数颜色转换为十六进制
-          const color = '#' + colorInt.toString(16).padStart(6, '0').toUpperCase();
+          const color =
+            '#' + colorInt.toString(16).padStart(6, '0').toUpperCase();
 
           // XML模式转换: 1-3滚动, 4顶部, 5底部
           let artplayerMode = 0; // 默认滚动
@@ -467,17 +523,23 @@ async function fetchDanmuFromXMLAPI(videoUrl: string): Promise<DanmuItem[]> {
 
       if (danmuList.length === 0) {
         console.log(`📭 ${apiName}未返回弹幕数据`);
-        console.log(`🔍 ${apiName}响应前500字符:`, responseText.substring(0, 500));
+        console.log(
+          `🔍 ${apiName}响应前500字符:`,
+          responseText.substring(0, 500)
+        );
         continue; // 尝试下一个API
       }
 
       // 过滤和排序
-      const filteredDanmu = danmuList.filter(item =>
-        item.text.length > 0 &&
-        !item.text.includes('弹幕正在赶来') &&
-        !item.text.includes('官方弹幕库') &&
-        item.time >= 0
-      ).sort((a, b) => a.time - b.time);
+      const filteredDanmu = danmuList
+        .filter(
+          (item) =>
+            item.text.length > 0 &&
+            !item.text.includes('弹幕正在赶来') &&
+            !item.text.includes('官方弹幕库') &&
+            item.time >= 0
+        )
+        .sort((a, b) => a.time - b.time);
 
       console.log(`✅ ${apiName}成功解析 ${filteredDanmu.length} 条有效弹幕`);
 
@@ -489,12 +551,17 @@ async function fetchDanmuFromXMLAPI(videoUrl: string): Promise<DanmuItem[]> {
       }, {} as Record<number, number>);
 
       console.log(`📊 ${apiName}弹幕时间分布(按分钟):`, timeStats);
-      console.log(`📋 ${apiName}弹幕前10条:`, filteredDanmu.slice(0, 10).map(item =>
-        `${item.time}s: "${item.text.substring(0, 20)}" (${item.color})`
-      ));
+      console.log(
+        `📋 ${apiName}弹幕前10条:`,
+        filteredDanmu
+          .slice(0, 10)
+          .map(
+            (item) =>
+              `${item.time}s: "${item.text.substring(0, 20)}" (${item.color})`
+          )
+      );
 
       return filteredDanmu; // 成功获取弹幕，直接返回
-
     } catch (error) {
       clearTimeout(timeoutId);
       if (error instanceof DOMException && error.name === 'AbortError') {
@@ -535,10 +602,11 @@ async function fetchDanmuFromAPI(videoUrl: string): Promise<DanmuItem[]> {
     const response = await fetch(apiUrl, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        Accept: 'application/json, text/plain, */*',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Referer': 'https://danmu.icu/',
+        Referer: 'https://danmu.icu/',
       },
     });
 
@@ -568,31 +636,35 @@ async function fetchDanmuFromAPI(videoUrl: string): Promise<DanmuItem[]> {
     // API返回格式: [时间, 位置, 颜色, "", 文本, "", "", "字号"]
     console.log(`获取到 ${data.danmuku.length} 条原始弹幕数据`);
 
-    const danmuList = data.danmuku.map((item: any[]) => {
-      // 正确解析时间 - 第一个元素就是时间(秒)
-      const time = parseFloat(item[0]) || 0;
-      const text = (item[4] || '').toString().trim();
-      const color = item[2] || '#FFFFFF';
+    const danmuList = data.danmuku
+      .map((item: any[]) => {
+        // 正确解析时间 - 第一个元素就是时间(秒)
+        const time = parseFloat(item[0]) || 0;
+        const text = (item[4] || '').toString().trim();
+        const color = item[2] || '#FFFFFF';
 
-      // 转换位置: top=1顶部, bottom=2底部, right=0滚动
-      let mode = 0;
-      if (item[1] === 'top') mode = 1;
-      else if (item[1] === 'bottom') mode = 2;
-      else mode = 0; // right 或其他都是滚动
+        // 转换位置: top=1顶部, bottom=2底部, right=0滚动
+        let mode = 0;
+        if (item[1] === 'top') mode = 1;
+        else if (item[1] === 'bottom') mode = 2;
+        else mode = 0; // right 或其他都是滚动
 
-      return {
-        text: text,
-        time: time,
-        color: color,
-        mode: mode,
-      };
-    }).filter(item => {
-      const valid = item.text.length > 0 &&
-        !item.text.includes('弹幕正在赶来') &&
-        !item.text.includes('官方弹幕库') &&
-        item.time >= 0;
-      return valid;
-    }).sort((a, b) => a.time - b.time); // 按时间排序
+        return {
+          text: text,
+          time: time,
+          color: color,
+          mode: mode,
+        };
+      })
+      .filter((item) => {
+        const valid =
+          item.text.length > 0 &&
+          !item.text.includes('弹幕正在赶来') &&
+          !item.text.includes('官方弹幕库') &&
+          item.time >= 0;
+        return valid;
+      })
+      .sort((a, b) => a.time - b.time); // 按时间排序
 
     // 显示时间分布统计
     const timeStats = danmuList.reduce((acc, item) => {
@@ -602,12 +674,14 @@ async function fetchDanmuFromAPI(videoUrl: string): Promise<DanmuItem[]> {
     }, {} as Record<number, number>);
 
     console.log('📊 弹幕时间分布(按分钟):', timeStats);
-    console.log('📋 前10条弹幕:', danmuList.slice(0, 10).map(item =>
-      `${item.time}s: "${item.text.substring(0, 20)}"`
-    ));
+    console.log(
+      '📋 前10条弹幕:',
+      danmuList
+        .slice(0, 10)
+        .map((item) => `${item.time}s: "${item.text.substring(0, 20)}"`)
+    );
 
     return danmuList;
-
   } catch (error) {
     clearTimeout(timeoutId);
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -634,9 +708,12 @@ export async function GET(request: NextRequest) {
   console.log('集数:', episode);
 
   if (!doubanId && !title) {
-    return NextResponse.json({
-      error: 'Missing required parameters: douban_id or title'
-    }, { status: 400 });
+    return NextResponse.json(
+      {
+        error: 'Missing required parameters: douban_id or title',
+      },
+      { status: 400 }
+    );
   }
 
   try {
@@ -670,7 +747,7 @@ export async function GET(request: NextRequest) {
         danmu: [],
         platforms: [],
         total: 0,
-        message: `未找到"${title}"的视频平台链接，无法获取弹幕数据`
+        message: `未找到"${title}"的视频平台链接，无法获取弹幕数据`,
       });
     }
 
@@ -690,7 +767,9 @@ export async function GET(request: NextRequest) {
 
         if (jsonDanmu.length > 0) {
           danmu = jsonDanmu;
-          console.log(`✅ ${platform} 使用JSON API备用数据: ${danmu.length} 条弹幕`);
+          console.log(
+            `✅ ${platform} 使用JSON API备用数据: ${danmu.length} 条弹幕`
+          );
         }
       } else {
         console.log(`✅ ${platform} 使用XML API数据: ${danmu.length} 条弹幕`);
@@ -724,12 +803,14 @@ export async function GET(request: NextRequest) {
       platforms: platformInfo,
       total: allDanmu.length,
     });
-
   } catch (error) {
     console.error('外部弹幕获取失败:', error);
-    return NextResponse.json({
-      error: '获取外部弹幕失败',
-      danmu: []
-    }, { status: 500 });
+    return NextResponse.json(
+      {
+        error: '获取外部弹幕失败',
+        danmu: [],
+      },
+      { status: 500 }
+    );
   }
 }

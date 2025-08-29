@@ -9,6 +9,7 @@ import { Heart } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 
+import artplayerPluginChromecast from '@/lib/artplayer-plugin-chromecast';
 import {
   deleteFavorite,
   deletePlayRecord,
@@ -1693,7 +1694,7 @@ function PlayPageClient() {
     }
     console.log(videoUrl);
 
-    // 检测移动设备和Safari浏览器
+    // 检测移动设备和浏览器类型
     const userAgent =
       typeof navigator !== 'undefined' ? navigator.userAgent : '';
     const isSafari = /^(?:(?!chrome|android).)*safari/i.test(userAgent);
@@ -1704,6 +1705,43 @@ function PlayPageClient() {
         userAgent
       ) || isIOS;
     const isWebKit = isSafari || isIOS;
+    // Chrome浏览器检测 - 只有真正的Chrome才支持Chromecast
+    // 排除各种厂商浏览器，即使它们的UA包含Chrome字样
+    const isChrome =
+      /Chrome/i.test(userAgent) &&
+      !/Edg/i.test(userAgent) && // 排除Edge
+      !/OPR/i.test(userAgent) && // 排除Opera
+      !/SamsungBrowser/i.test(userAgent) && // 排除三星浏览器
+      !/OPPO/i.test(userAgent) && // 排除OPPO浏览器
+      !/OppoBrowser/i.test(userAgent) && // 排除OppoBrowser
+      !/HeyTapBrowser/i.test(userAgent) && // 排除HeyTapBrowser (OPPO新版浏览器)
+      !/OnePlus/i.test(userAgent) && // 排除OnePlus浏览器
+      !/Xiaomi/i.test(userAgent) && // 排除小米浏览器
+      !/MIUI/i.test(userAgent) && // 排除MIUI浏览器
+      !/Huawei/i.test(userAgent) && // 排除华为浏览器
+      !/Vivo/i.test(userAgent) && // 排除Vivo浏览器
+      !/UCBrowser/i.test(userAgent) && // 排除UC浏览器
+      !/QQBrowser/i.test(userAgent) && // 排除QQ浏览器
+      !/Baidu/i.test(userAgent) && // 排除百度浏览器
+      !/SogouMobileBrowser/i.test(userAgent); // 排除搜狗浏览器
+
+    // 调试信息：输出设备检测结果和投屏策略
+    console.log('🔍 设备检测结果:', {
+      userAgent,
+      isIOS,
+      isSafari,
+      isMobile,
+      isWebKit,
+      isChrome,
+      AirPlay按钮: isIOS || isSafari ? '✅ 显示' : '❌ 隐藏',
+      Chromecast按钮: isChrome && !isIOS ? '✅ 显示' : '❌ 隐藏',
+      投屏策略:
+        isIOS || isSafari
+          ? '🍎 AirPlay (WebKit)'
+          : isChrome
+          ? '📺 Chromecast (Cast API)'
+          : '❌ 不支持投屏',
+    });
 
     // 优先使用ArtPlayer的switch方法，避免重建播放器
     if (artPlayerRef.current && !loading) {
@@ -1796,13 +1834,15 @@ function PlayPageClient() {
         mutex: true,
         playsInline: true,
         autoPlayback: false,
-        airplay: true,
         theme: '#22c55e',
         lang: 'zh-cn',
         hotkey: false,
         fastForward: true,
         autoOrientation: true,
         lock: true,
+        // AirPlay 仅在支持 WebKit API 的浏览器中启用
+        // 主要是 Safari (桌面和移动端) 和 iOS 上的其他浏览器
+        airplay: isIOS || isSafari,
         moreVideoAttr: {
           crossOrigin: 'anonymous',
         },
@@ -2077,7 +2117,7 @@ function PlayPageClient() {
             },
           },
         ],
-        // 弹幕插件配置
+        // 弹幕插件配置 - 禁用控制栏按钮，通过设置菜单控制
         plugins: [
           artplayerPluginDanmuku({
             danmuku: [], // 初始为空数组，后续通过load方法加载
@@ -2104,14 +2144,58 @@ function PlayPageClient() {
             maxLength: 100, // 弹幕最大长度
             lockTime: 3, // 输入框锁定时间
             theme: 'dark', // 弹幕主题
-            width: 300, // 屏幕宽度小于300px时，弹幕控件移到播放器主体
+            width: 300, // 当播放器宽度小于此值时，弹幕控件置于播放器底部，确保移动端正常显示
           }),
+          // Chromecast 插件加载策略：
+          // 只在 Chrome 浏览器中显示 Chromecast（排除 iOS Chrome）
+          // Safari 和 iOS：不显示 Chromecast（用原生 AirPlay）
+          // 其他浏览器：不显示 Chromecast（不支持 Cast API）
+          ...(isChrome && !isIOS
+            ? [
+                artplayerPluginChromecast({
+                  onStateChange: (state) => {
+                    console.log('Chromecast state changed:', state);
+                  },
+                  onCastAvailable: (available) => {
+                    console.log('Chromecast available:', available);
+                  },
+                  onCastStart: () => {
+                    console.log('Chromecast started');
+                  },
+                  onError: (error) => {
+                    console.error('Chromecast error:', error);
+                  },
+                }),
+              ]
+            : []),
         ],
       });
 
       // 监听播放器事件
       artPlayerRef.current.on('ready', async () => {
         setError(null);
+
+        // 添加弹幕插件按钮选择性隐藏CSS
+        const optimizeDanmukuControlsCSS = () => {
+          if (document.getElementById('danmuku-controls-optimize')) return;
+
+          const style = document.createElement('style');
+          style.id = 'danmuku-controls-optimize';
+          style.textContent = `
+            /* 只显示弹幕配置按钮，隐藏开关按钮和发射器 */
+            .artplayer-plugin-danmuku .apd-toggle {
+              display: none !important;
+            }
+            
+            .artplayer-plugin-danmuku .apd-emitter {
+              display: none !important;
+            }
+          `;
+          document.head.appendChild(style);
+        };
+
+        // 应用CSS优化
+        optimizeDanmukuControlsCSS();
 
         // 播放器就绪后，加载外部弹幕数据
         console.log('播放器已就绪，开始加载外部弹幕');
