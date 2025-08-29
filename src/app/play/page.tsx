@@ -3,6 +3,7 @@
 'use client';
 
 import Artplayer from 'artplayer';
+import artplayerPluginDanmuku from 'artplayer-plugin-danmuku';
 import Hls from 'hls.js';
 import { Heart } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -96,11 +97,27 @@ function PlayPageClient() {
     blockAdEnabledRef.current = blockAdEnabled;
   }, [blockAdEnabled]);
 
+  // 外部弹幕开关（从 localStorage 继承，默认 true）
+  const [externalDanmuEnabled, setExternalDanmuEnabled] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const v = localStorage.getItem('enable_external_danmu');
+      if (v !== null) return v === 'true';
+    }
+    return true; // 默认开启外部弹幕
+  });
+  const externalDanmuEnabledRef = useRef(externalDanmuEnabled);
+  useEffect(() => {
+    externalDanmuEnabledRef.current = externalDanmuEnabled;
+  }, [externalDanmuEnabled]);
+
+
   // 视频基本信息
   const [videoTitle, setVideoTitle] = useState(searchParams.get('title') || '');
   const [videoYear, setVideoYear] = useState(searchParams.get('year') || '');
   const [videoCover, setVideoCover] = useState('');
-  const [videoDoubanId, setVideoDoubanId] = useState(0);
+  const [videoDoubanId, setVideoDoubanId] = useState(
+    parseInt(searchParams.get('douban_id') || '0') || 0
+  );
   // 当前源和ID
   const [currentSource, setCurrentSource] = useState(
     searchParams.get('source') || ''
@@ -126,6 +143,7 @@ function PlayPageClient() {
   const currentIdRef = useRef(currentId);
   const videoTitleRef = useRef(videoTitle);
   const videoYearRef = useRef(videoYear);
+  const videoDoubanIdRef = useRef(videoDoubanId);
   const detailRef = useRef<SearchResult | null>(detail);
   const currentEpisodeIndexRef = useRef(currentEpisodeIndex);
 
@@ -137,6 +155,7 @@ function PlayPageClient() {
     currentEpisodeIndexRef.current = currentEpisodeIndex;
     videoTitleRef.current = videoTitle;
     videoYearRef.current = videoYear;
+    videoDoubanIdRef.current = videoDoubanId;
   }, [
     currentSource,
     currentId,
@@ -144,6 +163,7 @@ function PlayPageClient() {
     currentEpisodeIndex,
     videoTitle,
     videoYear,
+    videoDoubanId,
   ]);
 
   // 视频播放地址
@@ -186,6 +206,34 @@ function PlayPageClient() {
     Map<string, { quality: string; loadSpeed: string; pingTime: number }>
   >(new Map());
 
+  // 弹幕缓存：避免重复请求相同的弹幕数据，支持页面刷新持久化
+  const DANMU_CACHE_DURATION = 30 * 60 * 1000; // 30分钟缓存
+  const DANMU_CACHE_KEY = 'lunatv_danmu_cache';
+
+  // 获取弹幕缓存
+  const getDanmuCache = (): Map<string, { data: any[]; timestamp: number }> => {
+    try {
+      const cached = localStorage.getItem(DANMU_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        return new Map(Object.entries(parsed));
+      }
+    } catch (error) {
+      console.warn('读取弹幕缓存失败:', error);
+    }
+    return new Map();
+  };
+
+  // 保存弹幕缓存
+  const setDanmuCache = (cache: Map<string, { data: any[]; timestamp: number }>) => {
+    try {
+      const obj = Object.fromEntries(cache.entries());
+      localStorage.setItem(DANMU_CACHE_KEY, JSON.stringify(obj));
+    } catch (error) {
+      console.warn('保存弹幕缓存失败:', error);
+    }
+  };
+
   // 折叠状态（仅在 lg 及以上屏幕有效）
   const [isEpisodeSelectorCollapsed, setIsEpisodeSelectorCollapsed] =
     useState(false);
@@ -210,46 +258,153 @@ function PlayPageClient() {
   // 工具函数（Utils）
   // -----------------------------------------------------------------------------
 
-  // 播放源优选函数
+  // 播放源优选函数（针对旧iPad做极端保守优化）
   const preferBestSource = async (
     sources: SearchResult[]
   ): Promise<SearchResult> => {
     if (sources.length === 1) return sources[0];
 
-    // 将播放源均分为两批，并发测速各批，避免一次性过多请求
-    const batchSize = Math.ceil(sources.length / 2);
+    // 检测是否为iPad（所有浏览器都可能崩溃）
+    const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    const isIPad = /iPad/i.test(userAgent);
+    const isIOS = /iPad|iPhone|iPod/i.test(userAgent);
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent) || isIOS;
+
+    // 如果是iPad，使用极简策略避免崩溃
+    if (isIPad) {
+      console.log('检测到iPad，使用无测速优选策略避免崩溃');
+
+      // 简单的源名称优先级排序，不进行实际测速
+      const sourcePreference = [
+        'ok', 'niuhu', 'ying', 'wasu', 'mgtv', 'iqiyi', 'youku', 'qq'
+      ];
+
+      const sortedSources = sources.sort((a, b) => {
+        const aIndex = sourcePreference.findIndex(name =>
+          a.source_name?.toLowerCase().includes(name)
+        );
+        const bIndex = sourcePreference.findIndex(name =>
+          b.source_name?.toLowerCase().includes(name)
+        );
+
+        // 如果都在优先级列表中，按优先级排序
+        if (aIndex !== -1 && bIndex !== -1) {
+          return aIndex - bIndex;
+        }
+        // 如果只有一个在优先级列表中，优先选择它
+        if (aIndex !== -1) return -1;
+        if (bIndex !== -1) return 1;
+
+        // 都不在优先级列表中，保持原始顺序
+        return 0;
+      });
+
+      console.log('iPad优选结果:', sortedSources.map(s => s.source_name));
+      return sortedSources[0];
+    }
+
+    // 移动设备使用轻量级测速（仅ping，不创建HLS）
+    if (isMobile) {
+      console.log('移动设备使用轻量级优选');
+      return await lightweightPreference(sources);
+    }
+
+    // 桌面设备使用原来的测速方法（控制并发）
+    return await fullSpeedTest(sources);
+  };
+
+  // 轻量级优选：仅测试连通性，不创建video和HLS
+  const lightweightPreference = async (sources: SearchResult[]): Promise<SearchResult> => {
+    console.log('开始轻量级测速，仅测试连通性');
+
+    const results = await Promise.all(
+      sources.map(async (source) => {
+        try {
+          if (!source.episodes || source.episodes.length === 0) {
+            return { source, pingTime: 9999, available: false };
+          }
+
+          const episodeUrl = source.episodes.length > 1
+            ? source.episodes[1]
+            : source.episodes[0];
+
+          // 仅测试连通性和响应时间
+          const startTime = performance.now();
+          const response = await fetch(episodeUrl, {
+            method: 'HEAD',
+            mode: 'no-cors',
+            signal: AbortSignal.timeout(3000) // 3秒超时
+          });
+          const pingTime = performance.now() - startTime;
+
+          return {
+            source,
+            pingTime: Math.round(pingTime),
+            available: true
+          };
+        } catch (error) {
+          console.warn(`轻量级测速失败: ${source.source_name}`, error);
+          return { source, pingTime: 9999, available: false };
+        }
+      })
+    );
+
+    // 按可用性和响应时间排序
+    const sortedResults = results
+      .filter(r => r.available)
+      .sort((a, b) => a.pingTime - b.pingTime);
+
+    if (sortedResults.length === 0) {
+      console.warn('所有源都不可用，返回第一个');
+      return sources[0];
+    }
+
+    console.log('轻量级优选结果:', sortedResults.map(r =>
+      `${r.source.source_name}: ${r.pingTime}ms`
+    ));
+
+    return sortedResults[0].source;
+  };
+
+  // 完整测速（桌面设备）
+  const fullSpeedTest = async (sources: SearchResult[]): Promise<SearchResult> => {
+    // 桌面设备使用小批量并发，避免创建过多实例
+    const concurrency = 2;
     const allResults: Array<{
       source: SearchResult;
       testResult: { quality: string; loadSpeed: string; pingTime: number };
     } | null> = [];
 
-    for (let start = 0; start < sources.length; start += batchSize) {
-      const batchSources = sources.slice(start, start + batchSize);
+    for (let i = 0; i < sources.length; i += concurrency) {
+      const batch = sources.slice(i, i + concurrency);
+      console.log(`测速批次 ${Math.floor(i / concurrency) + 1}/${Math.ceil(sources.length / concurrency)}: ${batch.length} 个源`);
+
       const batchResults = await Promise.all(
-        batchSources.map(async (source) => {
+        batch.map(async (source) => {
           try {
-            // 检查是否有第一集的播放地址
             if (!source.episodes || source.episodes.length === 0) {
-              console.warn(`播放源 ${source.source_name} 没有可用的播放地址`);
               return null;
             }
 
-            const episodeUrl =
-              source.episodes.length > 1
-                ? source.episodes[1]
-                : source.episodes[0];
-            const testResult = await getVideoResolutionFromM3u8(episodeUrl);
+            const episodeUrl = source.episodes.length > 1
+              ? source.episodes[1]
+              : source.episodes[0];
 
-            return {
-              source,
-              testResult,
-            };
+            const testResult = await getVideoResolutionFromM3u8(episodeUrl);
+            return { source, testResult };
           } catch (error) {
+            console.warn(`测速失败: ${source.source_name}`, error);
             return null;
           }
         })
       );
+
       allResults.push(...batchResults);
+
+      // 批次间延迟，让资源有时间清理
+      if (i + concurrency < sources.length) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
 
     // 等待所有测速完成，包含成功和失败的结果
@@ -446,6 +601,66 @@ function PlayPageClient() {
     }
   };
 
+  // 检测移动设备（在组件层级定义）
+  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+  const isIOSGlobal = /iPad|iPhone|iPod/i.test(userAgent) && !(window as any).MSStream;
+  const isMobileGlobal = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent) || isIOSGlobal;
+
+  // 内存压力检测和清理（针对移动设备）
+  const checkMemoryPressure = () => {
+    // 仅在支持performance.memory的浏览器中执行
+    if (typeof performance !== 'undefined' && 'memory' in performance) {
+      try {
+        const memInfo = (performance as any).memory;
+        const usedJSHeapSize = memInfo.usedJSHeapSize;
+        const totalJSHeapSize = memInfo.totalJSHeapSize;
+        const heapLimit = memInfo.jsHeapSizeLimit;
+
+        // 计算内存使用率
+        const memoryUsageRatio = usedJSHeapSize / heapLimit;
+
+        console.log(`内存使用情况: ${(memoryUsageRatio * 100).toFixed(2)}% (${(usedJSHeapSize / 1024 / 1024).toFixed(2)}MB / ${(heapLimit / 1024 / 1024).toFixed(2)}MB)`);
+
+        // 如果内存使用超过75%，触发清理
+        if (memoryUsageRatio > 0.75) {
+          console.warn('内存使用过高，清理缓存...');
+
+          // 清理弹幕缓存
+          try {
+            localStorage.removeItem(DANMU_CACHE_KEY);
+            console.log('弹幕缓存已清理');
+          } catch (e) {
+            console.warn('清理弹幕缓存失败:', e);
+          }
+
+          // 尝试强制垃圾回收（如果可用）
+          if (typeof (window as any).gc === 'function') {
+            (window as any).gc();
+            console.log('已触发垃圾回收');
+          }
+
+          return true; // 返回真表示高内存压力
+        }
+      } catch (error) {
+        console.warn('内存检测失败:', error);
+      }
+    }
+    return false;
+  };
+
+  // 定期内存检查（仅在移动设备上）
+  useEffect(() => {
+    if (!isMobileGlobal) return;
+
+    const memoryCheckInterval = setInterval(() => {
+      checkMemoryPressure();
+    }, 30000); // 每30秒检查一次
+
+    return () => {
+      clearInterval(memoryCheckInterval);
+    };
+  }, [isMobileGlobal]);
+
   // Wake Lock 相关函数
   const requestWakeLock = async () => {
     try {
@@ -472,22 +687,40 @@ function PlayPageClient() {
     }
   };
 
-  // 清理播放器资源的统一函数
+  // 清理播放器资源的统一函数（添加更完善的清理逻辑）
   const cleanupPlayer = () => {
     if (artPlayerRef.current) {
       try {
-        // 销毁 HLS 实例
-        if (artPlayerRef.current.video && artPlayerRef.current.video.hls) {
-          artPlayerRef.current.video.hls.destroy();
+        // 1. 清理弹幕插件的WebWorker
+        if (artPlayerRef.current.plugins?.artplayerPluginDanmuku) {
+          const danmukuPlugin = artPlayerRef.current.plugins.artplayerPluginDanmuku;
+
+          // 尝试获取并清理WebWorker
+          if (danmukuPlugin.worker && typeof danmukuPlugin.worker.terminate === 'function') {
+            danmukuPlugin.worker.terminate();
+            console.log('弹幕WebWorker已清理');
+          }
+
+          // 清空弹幕数据
+          if (typeof danmukuPlugin.reset === 'function') {
+            danmukuPlugin.reset();
+          }
         }
 
-        // 销毁 ArtPlayer 实例
+        // 2. 销毁HLS实例
+        if (artPlayerRef.current.video && artPlayerRef.current.video.hls) {
+          artPlayerRef.current.video.hls.destroy();
+          console.log('HLS实例已销毁');
+        }
+
+        // 3. 销毁ArtPlayer实例
         artPlayerRef.current.destroy();
         artPlayerRef.current = null;
 
         console.log('播放器资源已清理');
       } catch (err) {
         console.warn('清理播放器资源时出错:', err);
+        // 即使出错也要确保引用被清空
         artPlayerRef.current = null;
       }
     }
@@ -645,9 +878,152 @@ function PlayPageClient() {
     }
   }
 
+  // 加载外部弹幕数据（带缓存）
+  const loadExternalDanmu = async (): Promise<any[]> => {
+    if (!externalDanmuEnabledRef.current) {
+      console.log('外部弹幕开关已关闭');
+      return [];
+    }
+
+    try {
+      const params = new URLSearchParams();
+
+      // 使用当前最新的state值而不是ref值
+      const currentVideoTitle = videoTitle;
+      const currentVideoYear = videoYear;
+      const currentVideoDoubanId = videoDoubanId;
+      const currentEpisodeNum = currentEpisodeIndex + 1;
+
+      if (currentVideoDoubanId && currentVideoDoubanId > 0) {
+        params.append('douban_id', currentVideoDoubanId.toString());
+      }
+      if (currentVideoTitle) {
+        params.append('title', currentVideoTitle);
+      }
+      if (currentVideoYear) {
+        params.append('year', currentVideoYear);
+      }
+      if (currentEpisodeIndex !== null && currentEpisodeIndex >= 0) {
+        params.append('episode', currentEpisodeNum.toString());
+      }
+
+      if (!params.toString()) {
+        console.log('没有可用的参数获取弹幕');
+        return [];
+      }
+
+      // 生成缓存键（使用state值确保准确性）
+      const cacheKey = `${currentVideoTitle}_${currentVideoYear}_${currentVideoDoubanId}_${currentEpisodeNum}`;
+      const now = Date.now();
+
+      console.log('🔑 弹幕缓存调试信息:');
+      console.log('- 缓存键:', cacheKey);
+      console.log('- 当前时间:', now);
+      console.log('- 视频标题:', currentVideoTitle);
+      console.log('- 视频年份:', currentVideoYear);
+      console.log('- 豆瓣ID:', currentVideoDoubanId);
+      console.log('- 集数:', currentEpisodeNum);
+
+      // 从localStorage获取缓存
+      const danmuCache = getDanmuCache();
+      console.log('- 缓存Map大小:', danmuCache.size);
+
+      // 检查缓存
+      const cached = danmuCache.get(cacheKey);
+      if (cached) {
+        console.log('📦 找到缓存数据:');
+        console.log('- 缓存时间:', cached.timestamp);
+        console.log('- 时间差:', now - cached.timestamp, 'ms');
+        console.log('- 缓存有效期:', DANMU_CACHE_DURATION, 'ms');
+        console.log('- 是否过期:', (now - cached.timestamp) >= DANMU_CACHE_DURATION);
+      } else {
+        console.log('❌ 未找到缓存数据');
+      }
+
+      if (cached && (now - cached.timestamp) < DANMU_CACHE_DURATION) {
+        console.log('✅ 使用弹幕缓存数据，缓存键:', cacheKey);
+        console.log('📊 缓存弹幕数量:', cached.data.length);
+        return cached.data;
+      }
+
+      console.log('开始获取外部弹幕，参数:', params.toString());
+      const response = await fetch(`/api/danmuku?${params}`);
+      console.log('弹幕API响应状态:', response.status, response.statusText);
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('弹幕API请求失败:', response.status, errorText);
+        return [];
+      }
+
+      const data = await response.json();
+      console.log('外部弹幕API返回数据:', data);
+      console.log('外部弹幕加载成功:', data.total || 0, '条');
+
+      const finalDanmu = data.danmu || [];
+      console.log('最终弹幕数据:', finalDanmu.length, '条');
+
+      // 缓存结果
+      console.log('💾 保存弹幕到缓存:');
+      console.log('- 缓存键:', cacheKey);
+      console.log('- 弹幕数量:', finalDanmu.length);
+      console.log('- 保存时间:', now);
+
+      const updatedCache = getDanmuCache();
+      updatedCache.set(cacheKey, {
+        data: finalDanmu,
+        timestamp: now
+      });
+
+      // 清理过期缓存
+      updatedCache.forEach((value, key) => {
+        if (now - value.timestamp >= DANMU_CACHE_DURATION) {
+          console.log('🗑️ 清理过期缓存:', key);
+          updatedCache.delete(key);
+        }
+      });
+
+      // 保存到localStorage
+      setDanmuCache(updatedCache);
+
+      console.log('✅ 缓存保存完成，当前缓存大小:', updatedCache.size);
+
+      return finalDanmu;
+    } catch (error) {
+      console.error('加载外部弹幕失败:', error);
+      console.log('弹幕加载失败，返回空结果');
+      return [];
+    }
+  };
+
   // 当集数索引变化时自动更新视频地址
   useEffect(() => {
     updateVideoUrl(detail, currentEpisodeIndex);
+
+    // 如果播放器已经存在且弹幕插件已加载，重新加载弹幕
+    if (artPlayerRef.current && artPlayerRef.current.plugins?.artplayerPluginDanmuku) {
+      console.log('集数变化，重新加载弹幕');
+      setTimeout(async () => {
+        try {
+          const externalDanmu = await loadExternalDanmu(); // 这里会检查开关状态
+          console.log('集数变化后外部弹幕加载结果:', externalDanmu);
+
+          if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+            if (externalDanmu.length > 0) {
+              console.log('向播放器插件重新加载弹幕数据:', externalDanmu.length, '条');
+              artPlayerRef.current.plugins.artplayerPluginDanmuku.load(externalDanmu);
+              artPlayerRef.current.notice.show = `已加载 ${externalDanmu.length} 条弹幕`;
+            } else {
+              console.log('集数变化后没有弹幕数据可加载');
+              // 不要自动load([])，保持当前状态
+              artPlayerRef.current.notice.show = '暂无弹幕数据';
+            }
+          }
+        } catch (error) {
+          console.error('集数变化后加载外部弹幕失败:', error);
+        }
+      }, 1000); // 延迟1秒确保视频加载完成
+    }
   }, [detail, currentEpisodeIndex]);
 
   // 进入页面时直接获取全部源信息
@@ -772,7 +1148,8 @@ function PlayPageClient() {
       setVideoYear(detailData.year);
       setVideoTitle(detailData.title || videoTitleRef.current);
       setVideoCover(detailData.poster);
-      setVideoDoubanId(detailData.douban_id || 0);
+      // 优先保留URL参数中的豆瓣ID，如果URL中没有则使用详情数据中的
+      setVideoDoubanId(videoDoubanIdRef.current || detailData.douban_id || 0);
       setDetail(detailData);
       if (currentEpisodeIndex >= detailData.episodes.length) {
         setCurrentEpisodeIndex(0);
@@ -926,7 +1303,8 @@ function PlayPageClient() {
       setVideoTitle(newDetail.title || newTitle);
       setVideoYear(newDetail.year);
       setVideoCover(newDetail.poster);
-      setVideoDoubanId(newDetail.douban_id || 0);
+      // 优先保留URL参数中的豆瓣ID，如果URL中没有则使用详情数据中的
+      setVideoDoubanId(videoDoubanIdRef.current || newDetail.douban_id || 0);
       setCurrentSource(newSource);
       setCurrentId(newId);
       setDetail(newDetail);
@@ -1256,27 +1634,63 @@ function PlayPageClient() {
     }
     console.log(videoUrl);
 
-    // 检测是否为WebKit浏览器
-    const isWebkit =
-      typeof window !== 'undefined' &&
-      typeof (window as any).webkitConvertPointFromNodeToPage === 'function';
+    // 检测移动设备和Safari浏览器
+    const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    const isSafari = /^(?:(?!chrome|android).)*safari/i.test(userAgent);
+    const isIOS = /iPad|iPhone|iPod/i.test(userAgent) && !(window as any).MSStream;
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent) || isIOS;
+    const isWebKit = isSafari || isIOS;
 
-    // 非WebKit浏览器且播放器已存在，使用switch方法切换
-    if (!isWebkit && artPlayerRef.current) {
-      artPlayerRef.current.switch = videoUrl;
-      artPlayerRef.current.title = `${videoTitle} - 第${currentEpisodeIndex + 1
-        }集`;
-      artPlayerRef.current.poster = videoCover;
-      if (artPlayerRef.current?.video) {
-        ensureVideoSource(
-          artPlayerRef.current.video as HTMLVideoElement,
-          videoUrl
-        );
+    // 优先使用ArtPlayer的switch方法，避免重建播放器
+    if (artPlayerRef.current && !loading) {
+      try {
+        // 清空当前弹幕（为切换做准备）
+        if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+          artPlayerRef.current.plugins.artplayerPluginDanmuku.load([]);
+          console.log('已清空弹幕数据，准备切换');
+        }
+
+        // 使用ArtPlayer的switch方法切换URL
+        artPlayerRef.current.switch = videoUrl;
+        artPlayerRef.current.title = `${videoTitle} - 第${currentEpisodeIndex + 1}集`;
+        artPlayerRef.current.poster = videoCover;
+
+        if (artPlayerRef.current?.video) {
+          ensureVideoSource(
+            artPlayerRef.current.video as HTMLVideoElement,
+            videoUrl
+          );
+        }
+
+        // 延迟重新加载弹幕，确保视频切换完成
+        setTimeout(async () => {
+          try {
+            const externalDanmu = await loadExternalDanmu();
+            console.log('切换后重新加载弹幕结果:', externalDanmu);
+
+            if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+              if (externalDanmu.length > 0) {
+                console.log('切换后向播放器插件加载弹幕数据:', externalDanmu.length, '条');
+                artPlayerRef.current.plugins.artplayerPluginDanmuku.load(externalDanmu);
+                artPlayerRef.current.notice.show = `已加载 ${externalDanmu.length} 条弹幕`;
+              } else {
+                console.log('切换后没有弹幕数据可加载');
+                artPlayerRef.current.notice.show = '暂无弹幕数据';
+              }
+            }
+          } catch (error) {
+            console.error('切换后重新加载外部弹幕失败:', error);
+          }
+        }, 1500);
+
+        console.log('使用switch方法成功切换视频');
+        return;
+      } catch (error) {
+        console.warn('Switch方法失败，将重建播放器:', error);
+        // 如果switch失败，清理播放器并重新创建
+        cleanupPlayer();
       }
-      return;
     }
-
-    // WebKit浏览器或首次创建：销毁之前的播放器实例并创建新的
     if (artPlayerRef.current) {
       cleanupPlayer();
     }
@@ -1332,14 +1746,24 @@ function PlayPageClient() {
               video.hls.destroy();
             }
             const hls = new Hls({
-              debug: false, // 关闭日志
-              enableWorker: true, // WebWorker 解码，降低主线程压力
-              lowLatencyMode: true, // 开启低延迟 LL-HLS
+              debug: false,
+              enableWorker: true,
+              lowLatencyMode: !isMobile, // 移动设备关闭低延迟模式以节省资源
 
-              /* 缓冲/内存相关 */
-              maxBufferLength: 30, // 前向缓冲最大 30s，过大容易导致高延迟
-              backBufferLength: 30, // 仅保留 30s 已播放内容，避免内存占用
-              maxBufferSize: 60 * 1000 * 1000, // 约 60MB，超出后触发清理
+              /* 缓冲/内存相关 - 移动设备优化 */
+              maxBufferLength: isMobile ? (isIOS ? 8 : 12) : 30, // iOS更保守的缓冲
+              backBufferLength: isMobile ? (isIOS ? 5 : 8) : 30, // 减少已播放内容缓存
+              maxBufferSize: isMobile
+                ? (isIOS ? 15 * 1000 * 1000 : 25 * 1000 * 1000) // iOS: 15MB, Android: 25MB
+                : 60 * 1000 * 1000, // 桌面: 60MB
+
+              /* 网络优化 */
+              maxLoadingDelay: isMobile ? 2 : 4, // 移动设备更快的加载超时
+              maxBufferHole: isMobile ? 0.3 : 0.5, // 减少缓冲洞
+
+              /* Fragment管理 */
+              liveDurationInfinity: false, // 避免无限缓冲
+              liveBackBufferLength: isMobile ? 3 : 10, // 减少直播回放缓冲
 
               /* 自定义loader */
               loader: blockAdEnabledRef.current
@@ -1403,6 +1827,89 @@ function PlayPageClient() {
                 // ignore
               }
               return newVal ? '当前开启' : '当前关闭';
+            },
+          },
+          {
+            name: '外部弹幕',
+            html: '外部弹幕',
+            icon: '<text x="50%" y="50%" font-size="14" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#ffffff">外</text>',
+            tooltip: externalDanmuEnabled ? '外部弹幕已开启' : '外部弹幕已关闭',
+            switch: externalDanmuEnabled,
+            onSwitch: function (item) {
+              const nextState = !item.switch;
+
+              // 立即同步更新所有状态（确保UI响应速度）
+              externalDanmuEnabledRef.current = nextState;
+              setExternalDanmuEnabled(nextState);
+              item.tooltip = nextState ? '外部弹幕已开启' : '外部弹幕已关闭';
+
+              // 同步localStorage操作（快速）
+              try {
+                localStorage.setItem('enable_external_danmu', String(nextState));
+              } catch (e) {
+                console.warn('localStorage设置失败:', e);
+              }
+
+              // 异步处理弹幕数据（完全非阻塞）
+              Promise.resolve().then(async () => {
+                try {
+                  if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                    const plugin = artPlayerRef.current.plugins.artplayerPluginDanmuku;
+
+                    if (nextState) {
+                      // 开启外部弹幕：清空当前数据再加载新数据
+                      console.log('开启外部弹幕，清空并加载新数据...');
+                      plugin.load([]); // 先清空
+                      const externalDanmu = await loadExternalDanmu();
+                      if (externalDanmuEnabledRef.current) { // 再次检查状态，防止快速切换
+                        plugin.load(externalDanmu);
+                        plugin.show();
+                        console.log('外部弹幕已加载:', externalDanmu.length, '条');
+                        // 显示弹幕加载提示
+                        if (artPlayerRef.current) {
+                          if (externalDanmu.length > 0) {
+                            artPlayerRef.current.notice.show = `已加载 ${externalDanmu.length} 条弹幕`;
+                          } else {
+                            artPlayerRef.current.notice.show = '暂无弹幕数据';
+                          }
+                        }
+                      }
+                    } else {
+                      // 关闭外部弹幕：清空数据并隐藏
+                      console.log('关闭外部弹幕，清空数据并隐藏...');
+                      plugin.load([]); // 清空弹幕数据
+                      plugin.hide();
+                      console.log('外部弹幕已关闭并清空');
+                      // 显示关闭提示
+                      if (artPlayerRef.current) {
+                        artPlayerRef.current.notice.show = '外部弹幕已关闭';
+                      }
+                    }
+                  }
+                } catch (error) {
+                  console.error('异步处理外部弹幕失败:', error);
+                }
+              });
+
+              return nextState; // 立即返回新状态
+            },
+          },
+          {
+            html: '弹幕开关',
+            icon: '<text x="50%" y="50%" font-size="16" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#ffffff">弹</text>',
+            tooltip: '弹幕显示/隐藏',
+            onClick() {
+              if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                const plugin = artPlayerRef.current.plugins.artplayerPluginDanmuku;
+                if (plugin.isHide) {
+                  plugin.show();
+                  return '弹幕已显示';
+                } else {
+                  plugin.hide();
+                  return '弹幕已隐藏';
+                }
+              }
+              return '弹幕功能未加载';
             },
           },
           {
@@ -1473,6 +1980,245 @@ function PlayPageClient() {
               }
             },
           },
+          {
+            name: '弹幕字号',
+            html: '弹幕字号',
+            icon: '<text x="50%" y="50%" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#ffffff">字</text>',
+            selector: [
+              {
+                html: '小号 (18px)',
+                value: 18,
+              },
+              {
+                html: '默认 (25px)',
+                value: 25,
+                default: true,
+              },
+              {
+                html: '大号 (32px)',
+                value: 32,
+              },
+              {
+                html: '特大 (40px)',
+                value: 40,
+              },
+            ],
+            onSelect: function (item) {
+              if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                try {
+                  // 显示处理中状态
+                  artPlayerRef.current.notice.show = '弹幕字号调整中...';
+
+                  // 增加防抖延迟，优化性能
+                  if ((window as any).danmakuConfigTimeout) {
+                    clearTimeout((window as any).danmakuConfigTimeout);
+                  }
+                  (window as any).danmakuConfigTimeout = setTimeout(() => {
+                    if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                      const currentFontSize = artPlayerRef.current.plugins.artplayerPluginDanmuku.fontSize;
+
+                      // 只有字体大小真正改变时才更新（配置变更会自动触发保存）
+                      if (currentFontSize !== item.value) {
+                        artPlayerRef.current.plugins.artplayerPluginDanmuku.config({
+                          fontSize: item.value
+                        });
+                        artPlayerRef.current.notice.show = `弹幕字号已调整: ${item.html}`;
+                      }
+                    }
+                  }, 200); // 增加到200ms
+                } catch (error) {
+                  console.error('调整弹幕字号失败:', error);
+                  artPlayerRef.current.notice.show = '弹幕字号调整失败';
+                }
+              }
+              return item.html;
+            },
+          },
+          {
+            name: '弹幕区域',
+            html: '弹幕区域',
+            icon: '<text x="50%" y="50%" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#ffffff">区</text>',
+            selector: [
+              {
+                html: '1/4屏幕',
+                value: [10, '75%'], // 顶部10px，底部75%边距
+                default: true,
+              },
+              {
+                html: '1/2屏幕',
+                value: [10, '50%'], // 顶部10px，底部50%边距
+              },
+              {
+                html: '3/4屏幕',
+                value: [10, '25%'], // 顶部10px，底部25%边距
+              },
+              {
+                html: '全屏',
+                value: [10, '5%'], // 顶部10px，底部5%边距（留点安全区域）
+              },
+            ],
+            onSelect: function (item) {
+              if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                try {
+                  artPlayerRef.current.plugins.artplayerPluginDanmuku.config({
+                    margin: item.value
+                  });
+                  artPlayerRef.current.notice.show = `弹幕区域已调整: ${item.html}`;
+                } catch (error) {
+                  console.error('调整弹幕区域失败:', error);
+                  artPlayerRef.current.notice.show = '弹幕区域调整失败';
+                }
+              }
+              return item.html;
+            },
+          },
+          {
+            name: '弹幕速度',
+            html: '弹幕速度',
+            icon: '<text x="50%" y="50%" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#ffffff">速</text>',
+            selector: [
+              {
+                html: '极慢 (10秒)',
+                value: 10,
+              },
+              {
+                html: '慢速 (7秒)',
+                value: 7,
+              },
+              {
+                html: '默认 (5秒)',
+                value: 5,
+                default: true,
+              },
+              {
+                html: '快速 (3秒)',
+                value: 3,
+              },
+              {
+                html: '极快 (1秒)',
+                value: 1,
+              },
+            ],
+            onSelect: function (item) {
+              if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                try {
+                  artPlayerRef.current.plugins.artplayerPluginDanmuku.config({
+                    speed: item.value
+                  });
+                  artPlayerRef.current.notice.show = `弹幕速度已调整: ${item.html}`;
+                } catch (error) {
+                  console.error('调整弹幕速度失败:', error);
+                  artPlayerRef.current.notice.show = '弹幕速度调整失败';
+                }
+              }
+              return item.html;
+            },
+          },
+          {
+            name: '弹幕透明度',
+            html: '弹幕透明度',
+            icon: '<text x="50%" y="50%" font-size="11" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#ffffff">透</text>',
+            selector: [
+              {
+                html: '完全透明 (10%)',
+                value: 0.1,
+              },
+              {
+                html: '半透明 (30%)',
+                value: 0.3,
+              },
+              {
+                html: '较淡 (50%)',
+                value: 0.5,
+              },
+              {
+                html: '默认 (80%)',
+                value: 0.8,
+                default: true,
+              },
+              {
+                html: '完全不透明 (100%)',
+                value: 1.0,
+              },
+            ],
+            onSelect: function (item) {
+              if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                try {
+                  artPlayerRef.current.plugins.artplayerPluginDanmuku.config({
+                    opacity: item.value
+                  });
+                  artPlayerRef.current.notice.show = `弹幕透明度已调整: ${item.html}`;
+                } catch (error) {
+                  console.error('调整弹幕透明度失败:', error);
+                  artPlayerRef.current.notice.show = '弹幕透明度调整失败';
+                }
+              }
+              return item.html;
+            },
+          },
+          {
+            name: '按类型蒙蔽',
+            html: '按类型蒙蔽',
+            icon: '<text x="50%" y="50%" font-size="11" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#ffffff">蒙</text>',
+            selector: [
+              {
+                html: '显示全部',
+                value: [0, 1, 2], // 显示所有类型
+                default: true,
+              },
+              {
+                html: '蒙蔽滚动',
+                value: [1, 2], // 只显示顶部和底部
+              },
+              {
+                html: '蒙蔽顶部',
+                value: [0, 2], // 只显示滚动和底部
+              },
+              {
+                html: '蒙蔽底部',
+                value: [0, 1], // 只显示滚动和顶部
+              },
+              {
+                html: '只显示滚动',
+                value: [0], // 只显示滚动
+              },
+            ],
+            onSelect: function (item) {
+              if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                try {
+                  artPlayerRef.current.plugins.artplayerPluginDanmuku.config({
+                    modes: item.value
+                  });
+                  artPlayerRef.current.notice.show = `弹幕类型已调整: ${item.html}`;
+                } catch (error) {
+                  console.error('调整弹幕类型失败:', error);
+                  artPlayerRef.current.notice.show = '弹幕类型调整失败';
+                }
+              }
+              return item.html;
+            },
+          },
+          {
+            name: '防重叠',
+            html: '防重叠',
+            icon: '<text x="50%" y="50%" font-size="12" font-weight="bold" text-anchor="middle" dominant-baseline="middle" fill="#ffffff">防</text>',
+            switch: true,
+            onSwitch: function (item) {
+              const nextState = !item.switch;
+              if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+                try {
+                  artPlayerRef.current.plugins.artplayerPluginDanmuku.config({
+                    antiOverlap: nextState
+                  });
+                  artPlayerRef.current.notice.show = nextState ? '弹幕防重叠已开启' : '弹幕防重叠已关闭';
+                } catch (error) {
+                  console.error('调整弹幕防重叠失败:', error);
+                  artPlayerRef.current.notice.show = '弹幕防重叠调整失败';
+                }
+              }
+              return nextState;
+            },
+          },
         ],
         // 控制栏配置
         controls: [
@@ -1486,11 +2232,114 @@ function PlayPageClient() {
             },
           },
         ],
+        // 弹幕插件配置
+        plugins: [
+          artplayerPluginDanmuku({
+            danmuku: [], // 初始为空数组，后续通过load方法加载
+            speed: parseInt(localStorage.getItem('danmaku_speed') || '5'), // 弹幕持续时间（从localStorage读取）
+            opacity: parseFloat(localStorage.getItem('danmaku_opacity') || '0.8'), // 弹幕透明度（从localStorage读取）
+            fontSize: parseInt(localStorage.getItem('danmaku_fontSize') || '25'), // 弹幕字体大小（从localStorage读取）
+            color: '#FFFFFF', // 默认弹幕颜色
+            mode: 0, // 默认弹幕模式：滚动
+            modes: JSON.parse(localStorage.getItem('danmaku_modes') || '[0, 1, 2]'), // 允许的弹幕模式（从localStorage读取）
+            margin: JSON.parse(localStorage.getItem('danmaku_margin') || '[10, "75%"]'), // 弹幕上下边距（从localStorage读取）
+            antiOverlap: localStorage.getItem('danmaku_antiOverlap') !== 'false', // 防重叠（从localStorage读取，默认true）
+            synchronousPlayback: true, // 弹幕与视频播放同步
+            visible: localStorage.getItem('danmaku_visible') !== 'false', // 弹幕层可见状态（从localStorage读取，默认true）
+            emitter: false, // 关闭弹幕发射器，节省工具栏空间
+            maxLength: 100, // 弹幕最大长度
+            lockTime: 3, // 输入框锁定时间
+            theme: 'dark', // 弹幕主题
+            width: 300, // 屏幕宽度小于300px时，弹幕控件移到播放器主体
+          }),
+        ],
       });
 
       // 监听播放器事件
-      artPlayerRef.current.on('ready', () => {
+      artPlayerRef.current.on('ready', async () => {
         setError(null);
+
+        // 播放器就绪后，加载外部弹幕数据
+        console.log('播放器已就绪，开始加载外部弹幕');
+        setTimeout(async () => {
+          try {
+            const externalDanmu = await loadExternalDanmu(); // 这里会检查开关状态
+            console.log('外部弹幕加载结果:', externalDanmu);
+
+            if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+              if (externalDanmu.length > 0) {
+                console.log('向播放器插件加载弹幕数据:', externalDanmu.length, '条');
+                artPlayerRef.current.plugins.artplayerPluginDanmuku.load(externalDanmu);
+                artPlayerRef.current.notice.show = `已加载 ${externalDanmu.length} 条弹幕`;
+              } else {
+                console.log('没有弹幕数据可加载');
+                artPlayerRef.current.notice.show = '暂无弹幕数据';
+              }
+            } else {
+              console.error('弹幕插件未找到');
+            }
+          } catch (error) {
+            console.error('加载外部弹幕失败:', error);
+          }
+        }, 1000); // 延迟1秒确保插件完全初始化
+
+        // 监听弹幕插件的显示/隐藏事件，自动保存状态到localStorage
+        artPlayerRef.current.on('artplayerPluginDanmuku:show', () => {
+          localStorage.setItem('danmaku_visible', 'true');
+          console.log('弹幕显示状态已保存');
+        });
+
+        artPlayerRef.current.on('artplayerPluginDanmuku:hide', () => {
+          localStorage.setItem('danmaku_visible', 'false');
+          console.log('弹幕隐藏状态已保存');
+        });
+
+        // 监听弹幕插件的配置变更事件，自动保存所有设置到localStorage
+        artPlayerRef.current.on('artplayerPluginDanmuku:config', (option: any) => {
+          try {
+            // 保存所有弹幕配置到localStorage
+            if (typeof option.fontSize !== 'undefined') {
+              localStorage.setItem('danmaku_fontSize', option.fontSize.toString());
+            }
+            if (typeof option.opacity !== 'undefined') {
+              localStorage.setItem('danmaku_opacity', option.opacity.toString());
+            }
+            if (typeof option.speed !== 'undefined') {
+              localStorage.setItem('danmaku_speed', option.speed.toString());
+            }
+            if (typeof option.margin !== 'undefined') {
+              localStorage.setItem('danmaku_margin', JSON.stringify(option.margin));
+            }
+            if (typeof option.modes !== 'undefined') {
+              localStorage.setItem('danmaku_modes', JSON.stringify(option.modes));
+            }
+            if (typeof option.antiOverlap !== 'undefined') {
+              localStorage.setItem('danmaku_antiOverlap', option.antiOverlap.toString());
+            }
+            if (typeof option.visible !== 'undefined') {
+              localStorage.setItem('danmaku_visible', option.visible.toString());
+            }
+            console.log('弹幕配置已自动保存:', option);
+          } catch (error) {
+            console.error('保存弹幕配置失败:', error);
+          }
+        });
+
+        // 监听播放进度跳转，触发弹幕重置
+        artPlayerRef.current.on('seek', (currentTime: number) => {
+          if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+            artPlayerRef.current.plugins.artplayerPluginDanmuku.reset();
+            console.log('进度跳转，弹幕已重置');
+          }
+        });
+
+        // 监听播放器窗口尺寸变化，触发弹幕重置（双重保障）
+        artPlayerRef.current.on('resize', () => {
+          if (artPlayerRef.current?.plugins?.artplayerPluginDanmuku) {
+            artPlayerRef.current.plugins.artplayerPluginDanmuku.reset();
+            console.log('窗口尺寸变化，弹幕已重置');
+          }
+        });
 
         // 播放器就绪后，如果正在播放则请求 Wake Lock
         if (artPlayerRef.current && !artPlayerRef.current.paused) {
@@ -1552,7 +2401,7 @@ function PlayPageClient() {
             Math.abs(
               artPlayerRef.current.playbackRate - lastPlaybackRateRef.current
             ) > 0.01 &&
-            isWebkit
+            isWebKit
           ) {
             artPlayerRef.current.playbackRate = lastPlaybackRateRef.current;
           }
